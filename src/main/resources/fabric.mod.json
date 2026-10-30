@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "autoboss",
+  "version": "${version}",
+  "name": "AutoBoss",
+  "description": "autoboss 自动化模块",
+  "authors": [
+    "example"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.example.autoboss.AutoBossMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.1",
+    "java": ">=21"
+  }
+}
