@@ -9,7 +9,7 @@ import java.util.List;
  */
 public final class BossRoutes {
 
-    public enum StepType { GOTO, STOP_GOTO, KEY_MOVE_TO, FLY_OFF, WAIT, FLY_ON }
+    public enum StepType { GOTO, STOP_GOTO, KEY_MOVE_TO, FLY_OFF, WAIT, FLY_ON, WALK_TO_X }
 
     public record Step(StepType type, double x, double y, double z, int ticks) {
         public Step(StepType type, double x, double y, double z) {
@@ -40,11 +40,14 @@ public final class BossRoutes {
                 steps.add(gotoStep(-78, 14, 0));
                 steps.add(new Step(StepType.FLY_OFF, 0, 0, 0));
                 steps.add(new Step(StepType.WAIT, 0, 0, 0, 60)); // 下坠 3 秒
+                steps.add(new Step(StepType.WALK_TO_X, -70, 0, 0)); // 落地后笔直向前走到 x=-70
                 steps.add(new Step(StepType.FLY_ON, 0, 0, 0));
-                steps.add(new Step(StepType.KEY_MOVE_TO, -70, 10, 0));
                 steps.add(gotoStep(-58, 38, 20));
             }
-            case 15 -> steps.add(gotoStep(-45, 14, -49));
+            case 15 -> {
+                steps.add(gotoStep(-45, 14, -49));
+                steps.add(gotoStep(7, 14, -49));
+            }
             default -> {
                 // 不会到达：解析阶段已经过滤。
             }

@@ -32,8 +32,15 @@ public final class AutoBossController {
         MENU_MAIN,
         MENU_TOWN,
         TELEPORT_WAIT,
-        SIGN_GOTO,
-        SIGN_CLICK,
+        ENABLE_FLY,
+        POINT1,
+        POINT2,
+        ARRIVE2,
+        POINT2_SECOND,
+        ARRIVE2_SECOND,
+        PRE_SIGN,
+        CLICK_SIGN,
+        ENTER_CHECK,
         SPECIAL_MENU,
         GROUP_MENU,
         COPY_LINE,
@@ -48,10 +55,21 @@ public final class AutoBossController {
 
     private static int stateTicks;
     private static int menuRetries;
-    private static int clickRetries;
     private static int routeIndex;
     private static int stepTicks;
     private static int stepRetries;
+
+    private static int enableFlyTries;
+    private static int point1Stage = 1;
+    private static int point1Ticks;
+    private static int point1Restarts;
+    private static Vec3d point1Start;
+    private static int calibrationRetries;
+    private static int signRetries;
+    private static int preSignTicks;
+
+    private static final Vec3d TOWN_MID = new Vec3d(-15.0, 187.0, -57.0);
+    private static final double CRUISE_Y = 187.0;
 
     private static String dedupKey;
     private static long dedupAt;
@@ -119,8 +137,15 @@ public final class AutoBossController {
                 case MENU_MAIN -> tickMenuMain(client);
                 case MENU_TOWN -> tickMenuTown(client);
                 case TELEPORT_WAIT -> tickTeleportWait(client);
-                case SIGN_GOTO -> tickSignGoto(client);
-                case SIGN_CLICK -> tickSignClick(client);
+                case ENABLE_FLY -> tickEnableFly(client);
+                case POINT1 -> tickPoint1(client);
+                case POINT2 -> tickPoint2(client);
+                case ARRIVE2 -> tickArrive2(client);
+                case POINT2_SECOND -> tickPoint2Second(client);
+                case ARRIVE2_SECOND -> tickArrive2Second(client);
+                case PRE_SIGN -> tickPreSign(client);
+                case CLICK_SIGN -> tickClickSign(client);
+                case ENTER_CHECK -> tickEnterCheck(client);
                 case SPECIAL_MENU -> tickSpecialMenu(client);
                 case GROUP_MENU -> tickGroupMenu(client);
                 case COPY_LINE -> tickCopyLine(client);
@@ -173,6 +198,24 @@ public final class AutoBossController {
         onDetected(lastDetected);
     }
 
+    /** B 菜单「开始」：用最近一次识别到的目标直接启动，不受自动识别开关影响。 */
+    public static void startFromMenu(MinecraftClient client) {
+        if (client == null || client.player == null) {
+            return;
+        }
+        if (state != State.IDLE) {
+            notify(client, "§e[AutoBoss] 当前流程还在执行，先终止或等待完成");
+            return;
+        }
+        if (lastDetected == null) {
+            notify(client, "§e[AutoBoss] 还没有识别到任何头目公告，无法开始");
+            return;
+        }
+        dedupKey = null;
+        completedKey = null;
+        start(client, lastDetected);
+    }
+
     // ------------------------------------------------------------------
     // 各状态
     // ------------------------------------------------------------------
@@ -184,7 +227,14 @@ public final class AutoBossController {
         stepTicks = 0;
         stepRetries = 0;
         menuRetries = 0;
-        clickRetries = 0;
+        enableFlyTries = 0;
+        point1Stage = 1;
+        point1Ticks = 0;
+        point1Restarts = 0;
+        point1Start = null;
+        calibrationRetries = 0;
+        signRetries = 0;
+        preSignTicks = 0;
 
         if (client.currentScreen != null) {
             client.setScreen(null);
@@ -261,67 +311,250 @@ public final class AutoBossController {
         if (client.currentScreen != null) {
             client.setScreen(null);
         }
-        FlightController.ensureFlying(client);
-        Vec3d nav = navPos(target.floor());
-        FlightController.gotoTo(client, nav.x, nav.y, nav.z);
-        stepTicks = 0;
-        stepRetries = 0;
-        progress(client, "传送到镇线，开始飞向 " + target.floor() + "c 告示牌");
-        setState(State.SIGN_GOTO);
+        enableFlyTries = 0;
+        progress(client, "传送到镇线，检查飞行状态");
+        setState(State.ENABLE_FLY);
     }
 
-    private static void tickSignGoto(MinecraftClient client) {
+    // ---- 与猪核一致的进线旅程：ENABLE_FLY → 三段飞行 → 两次 goto 防踢点 → 校准 → 右键 ----
+
+    private static void tickEnableFly(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (player == null) {
+            return;
+        }
+
+        if (player.getAbilities().flying || !player.isOnGround()) {
+            enterPoint1(client);
+            return;
+        }
+
+        if (stateTicks >= 15) {
+            if (enableFlyTries < 5) {
+                enableFlyTries++;
+                FlightController.ensureFlying(client);
+                player.jump();
+                stateTicks = 0;
+            } else {
+                enterPoint1(client);
+            }
+        }
+    }
+
+    private static void enterPoint1(MinecraftClient client) {
+        FlightController.stopGoto();
+        FlightController.ensureFlying(client);
+        point1Stage = 1;
+        point1Ticks = 0;
+        point1Start = client.player.getPos();
+        progress(client, "三段飞行前往镇线中转点 (-15,187,-57)");
+        setState(State.POINT1);
+    }
+
+    private static void tickPoint1(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (player == null) {
+            return;
+        }
+        if (stateTicks < 5) {
+            return;
+        }
+
+        point1Ticks++;
+        if (point1Ticks > 150) {
+            if (point1Restarts < 1) {
+                point1Restarts++;
+                progress(client, "三段飞行超时，重进镇线重试一次");
+                restartTownLine(client);
+            } else {
+                fail(client, "三段飞行未到达 (-15,187,-57)");
+            }
+            return;
+        }
+
+        if (!threeStageFlight(client)) {
+            return;
+        }
+
+        Vec3d pos = player.getPos();
+        if (FlightController.distanceTo(player, TOWN_MID.x, TOWN_MID.y, TOWN_MID.z) > 2.0 || pos.y > 187.5) {
+            FlightController.navigateByKeys(client, TOWN_MID.x, TOWN_MID.y, TOWN_MID.z);
+            return;
+        }
+
+        FlightController.releaseKeys(client);
+        FlightController.stopGoto();
+        progress(client, "已到达镇线中转点 (-15,187,-57)");
+        setState(State.POINT2);
+    }
+
+    /**
+     * 三段飞行：
+     * 1) 平飞 2.5 格；
+     * 2) 抬头 -89° 拉升到 Y=187；
+     * 3) 水平接近 (-15,187,-57)，最后按键微调。
+     */
+    private static boolean threeStageFlight(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (player == null) {
+            return false;
+        }
+        Vec3d pos = player.getPos();
+
+        if (point1Stage == 1) {
+            double dx = TOWN_MID.x - pos.x;
+            double dz = TOWN_MID.z - pos.z;
+            if (Math.sqrt(dx * dx + dz * dz) > 0.5) {
+                player.setYaw((float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F);
+            }
+
+            double moved = point1Start == null ? 0.0
+                    : Math.sqrt(Math.pow(pos.x - point1Start.x, 2) + Math.pow(pos.z - point1Start.z, 2));
+
+            if (moved < 2.5) {
+                player.setPitch(0.0F);
+                FlightController.setMovement(client, true, false, false);
+            } else {
+                player.setPitch(-89.0F);
+                FlightController.setMovement(client, false, true, false);
+                if (pos.y >= CRUISE_Y) {
+                    point1Stage = 2;
+                }
+            }
+            return false;
+        }
+
+        double horizontal = Math.sqrt(Math.pow(TOWN_MID.x - pos.x, 2) + Math.pow(TOWN_MID.z - pos.z, 2));
+
+        if (point1Stage == 2) {
+            if (horizontal < 3.0) {
+                point1Stage = 3;
+                return false;
+            }
+            if (horizontal > 0.5) {
+                player.setYaw((float) (Math.atan2(TOWN_MID.z - pos.z, TOWN_MID.x - pos.x) * 180.0 / Math.PI) - 90.0F);
+            }
+            player.setPitch(0.0F);
+            FlightController.setMovement(client, true, pos.y < CRUISE_Y - 2.0, pos.y > CRUISE_Y + 2.0);
+            return false;
+        }
+
+        if (point1Stage == 3) {
+            if (FlightController.distanceTo(player, TOWN_MID.x, TOWN_MID.y, TOWN_MID.z) < 2.0) {
+                FlightController.releaseKeys(client);
+                point1Stage = 1;
+                return true;
+            }
+            FlightController.navigateByKeys(client, TOWN_MID.x, TOWN_MID.y, TOWN_MID.z);
+        }
+        return false;
+    }
+
+    private static void restartTownLine(MinecraftClient client) {
+        if (client.currentScreen != null) {
+            client.setScreen(null);
+        }
+        FlightController.releaseKeys(client);
+        FlightController.stopGoto();
+        menuRetries = 0;
+        enableFlyTries = 0;
+        sendCommand(client, "/menu");
+        setState(State.MENU_MAIN);
+    }
+
+    private static void tickPoint2(MinecraftClient client) {
+        if (stateTicks == 1) {
+            FlightController.ensureFlying(client);
+            Vec3d nav = navPos(target.floor());
+            FlightController.gotoTo(client, nav.x, nav.y, nav.z);
+            setState(State.ARRIVE2);
+        }
+    }
+
+    private static void tickArrive2(MinecraftClient client) {
         ClientPlayerEntity player = client.player;
         if (player == null) {
             return;
         }
         Vec3d nav = navPos(target.floor());
-
-        if (stateTicks == 1) {
-            FlightController.ensureFlying(client);
-            FlightController.gotoTo(client, nav.x, nav.y, nav.z);
-        }
-
-        if (FlightController.distanceTo(player, nav.x, nav.y, nav.z) < 2.5) {
-            FlightController.stopGoto();
-            FlightController.releaseKeys(client);
-            clickRetries = 0;
-            setState(State.SIGN_CLICK);
-            return;
-        }
-
-        if (stateTicks > 450) {
-            if (stepRetries < 2) {
-                stepRetries++;
-                stateTicks = 0;
-                FlightController.gotoTo(client, nav.x, nav.y, nav.z);
-                progress(client, "没飞到告示牌，重发寻路 (" + stepRetries + "/2)");
-            } else {
-                fail(client, "无法到达 " + target.floor() + "c 告示牌附近");
-            }
+        if (FlightController.distanceTo(player, nav.x, nav.y, nav.z) < 2.0 || stateTicks > 200) {
+            setState(State.POINT2_SECOND);
         }
     }
 
-    private static void tickSignClick(MinecraftClient client) {
+    private static void tickPoint2Second(MinecraftClient client) {
         if (stateTicks == 1) {
-            BlockPos sign = signPos(target.floor());
-            lookAt(client, sign);
-            rightClickBlock(client, sign);
+            Vec3d nav = navPos(target.floor());
+            FlightController.gotoTo(client, nav.x, nav.y, nav.z);
+            setState(State.ARRIVE2_SECOND);
+        }
+    }
+
+    private static void tickArrive2Second(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (player == null) {
+            return;
+        }
+        Vec3d nav = navPos(target.floor());
+        if (FlightController.distanceTo(player, nav.x, nav.y, nav.z) < 2.0 || stateTicks > 150) {
+            preSignTicks = 12;
+            setState(State.PRE_SIGN);
+        }
+    }
+
+    private static void tickPreSign(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (player == null) {
+            return;
+        }
+        if (stateTicks == 1) {
+            FlightController.releaseKeys(client);
         }
 
+        Vec3d nav = navPos(target.floor());
+        double dx = Math.abs(player.getX() - nav.x);
+        double dz = Math.abs(player.getZ() - nav.z);
+
+        if (dx > 2.5 || dz > 2.5) {
+            calibrationRetries++;
+            if (calibrationRetries > 2) {
+                fail(client, String.format("防踢点校准失败 dx=%.2f dz=%.2f", dx, dz));
+                return;
+            }
+            progress(client, String.format("防踢点偏差 dx=%.2f dz=%.2f，重新 goto (%d/2)", dx, dz, calibrationRetries));
+            setState(State.POINT2);
+            return;
+        }
+
+        lookAt(client, signPos(target.floor()));
+        preSignTicks--;
+        if (preSignTicks <= 0) {
+            setState(State.CLICK_SIGN);
+        }
+    }
+
+    private static void tickClickSign(MinecraftClient client) {
+        BlockPos sign = signPos(target.floor());
+        lookAt(client, sign);
+        rightClickBlock(client, sign);
+        setState(State.ENTER_CHECK);
+    }
+
+    private static void tickEnterCheck(MinecraftClient client) {
         if (openedHandler(client) != null) {
-            clickRetries = 0;
+            calibrationRetries = 0;
+            signRetries = 0;
             setState(needsSpecialMenu(target.floor()) ? State.SPECIAL_MENU : State.GROUP_MENU);
             return;
         }
 
-        if (stateTicks > 60) {
-            if (clickRetries < 2) {
-                clickRetries++;
-                stateTicks = 0;
-                progress(client, "右键告示牌无响应，重试 (" + clickRetries + "/2)");
+        if (stateTicks > 15) {
+            if (signRetries < 1) {
+                signRetries++;
+                progress(client, "右键告示牌后没有界面，回到 goto 重试");
+                setState(State.POINT2);
             } else {
-                fail(client, "右键 " + target.floor() + "c 告示牌无响应");
+                fail(client, "右键告示牌后没有打开副本菜单");
             }
         }
     }
@@ -495,6 +728,38 @@ public final class AutoBossController {
                 FlightController.ensureFlying(client);
                 progress(client, "14c：重新开启飞行");
                 nextStep();
+            }
+            case WALK_TO_X -> {
+                ClientPlayerEntity walker = client.player;
+                if (walker == null) {
+                    return;
+                }
+                if (stepTicks == 0) {
+                    // 保持无飞行状态，纯走路
+                    FlightController.stopGoto();
+                    FlightController.disableFlight(client);
+                    FlightController.releaseKeys(client);
+                }
+                stepTicks++;
+
+                if (walker.getX() >= step.x()) {
+                    FlightController.releaseKeys(client);
+                    progress(client, String.format("14c：已走到 x=%.2f", walker.getX()));
+                    nextStep();
+                    return;
+                }
+
+                walker.setYaw(-90.0F); // 面向 +X
+                walker.setPitch(0.0F);
+                FlightController.setMovement(client, true, false, false);
+                if (walker.horizontalCollision && walker.isOnGround()) {
+                    walker.jump();
+                }
+
+                if (stepTicks > 600) {
+                    FlightController.releaseKeys(client);
+                    fail(client, String.format("14c：走到 x 超时（当前 x=%.2f）", walker.getX()));
+                }
             }
             case KEY_MOVE_TO -> {
                 if (stepTicks == 0) {
@@ -756,8 +1021,15 @@ public final class AutoBossController {
             case MENU_MAIN -> sb.append("打开主菜单");
             case MENU_TOWN -> sb.append("选择镇线");
             case TELEPORT_WAIT -> sb.append("等待传送");
-            case SIGN_GOTO -> sb.append("飞向告示牌");
-            case SIGN_CLICK -> sb.append("右键告示牌");
+            case ENABLE_FLY -> sb.append("检查飞行");
+            case POINT1 -> sb.append("三段飞行 (-15,187,-57)");
+            case POINT2 -> sb.append("goto 防踢点");
+            case ARRIVE2 -> sb.append("等待到达防踢点");
+            case POINT2_SECOND -> sb.append("二次 goto 防踢点");
+            case ARRIVE2_SECOND -> sb.append("等待二次到达");
+            case PRE_SIGN -> sb.append("校准坐标/对准告示牌");
+            case CLICK_SIGN -> sb.append("右键告示牌");
+            case ENTER_CHECK -> sb.append("等待副本菜单");
             case SPECIAL_MENU -> sb.append("选择层数");
             case GROUP_MENU -> sb.append("选择副本组");
             case COPY_LINE -> sb.append("选择分线");

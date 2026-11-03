@@ -52,8 +52,8 @@ public class AutoBossMenuScreen extends Screen {
             b.setMessage(filterLabel());
         }).dimensions(bx, by + 66, bw, bh).build());
 
-        addDrawableChild(ButtonWidget.builder(Text.literal("用最近一次识别重试"), b ->
-                AutoBossController.retryLast(this.client)).dimensions(bx, by + 88, bw, bh).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("§a§l开始（最近识别）"), b ->
+                AutoBossController.startFromMenu(this.client)).dimensions(bx, by + 88, bw, bh).build());
 
         addDrawableChild(ButtonWidget.builder(Text.literal("§c终止当前流程"), b ->
                 AutoBossController.abort(this.client, "手动终止")).dimensions(bx, by + 110, bw, bh).build());

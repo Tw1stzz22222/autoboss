@@ -127,6 +127,20 @@ public final class FlightController {
         }
     }
 
+    /** 直接设置前进/跳/潜行三个键，三段飞行和手动段共用。 */
+    public static void setMovement(MinecraftClient client, boolean forward, boolean jump, boolean sneak) {
+        setKey(client.options.forwardKey, forward);
+        setKey(client.options.jumpKey, jump);
+        setKey(client.options.sneakKey, sneak);
+
+        ClientPlayerEntity player = client.player;
+        if (player != null && player.input != null) {
+            player.input.pressingForward = forward;
+            player.input.jumping = jump;
+            player.input.sneaking = sneak;
+        }
+    }
+
     private static void setKey(net.minecraft.client.option.KeyBinding key, boolean pressed) {
         if (key != null) {
             key.setPressed(pressed);
